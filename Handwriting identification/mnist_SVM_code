@@ -1,0 +1,228 @@
+
+## If packages not installed then please install it beforehand
+#install.packages("kernlab")
+#install.packages("readr")
+#install.packages("caret")
+#install.packages("caTools")
+#install.packages("e1071")
+#install.packages("gridExtra")
+#install.packages("doParallel")
+#install.packages("ggplot2")
+#install.packages("dplyr")
+
+##Loading Neccessary libraries
+library(kernlab)
+library(readr)
+library(caret)
+library(caTools)
+library(e1071)
+library(gridExtra)
+library(doParallel)
+library(ggplot2)
+library(dplyr)
+
+#Importing dataset in R
+data_mnist_train<-read.csv("mnist_train.csv", header=F, stringsAsFactors = F)
+data_mnist_test<-read.csv("mnist_test.csv", header=F, stringsAsFactors = F)
+
+##Data Preparation: 
+# Many of the predictors have very few unique values and most of the values are just zero.
+# For prediction, the predictors whose variances are nearly zero are not suitable and needs to be eliminated.
+# Also, this approach ensures tremendous computational speed boost in comparison to keeping all the insignificant predictor variables as it is.
+# length(unique(unlist(df))) gives 256 unique values in respective data frames for both train and test
+nzr <- nearZeroVar(data_mnist_train[,-1],saveMetrics=T,freqCut=15000/1,uniqueCut=0.000425)
+View(nzr)
+sum(nzr$zeroVar)
+# Gives the total near-zero-variance predictors
+sum(nzr$nzv)
+# Eliminating the above near-zero-variance predictors and getting the new train data
+cutvar <- rownames(nzr[nzr$nzv==TRUE,])
+var <- setdiff(names(data_mnist_train),cutvar)
+data_mnist_train <- data_mnist_train[,var]
+
+# Taking only 15% of the observations from train and 27% of test dataset.
+data_mnist_train_sample<-data_mnist_train[sample(1:nrow(data_mnist_train),0.15*nrow(data_mnist_train),replace = FALSE),]
+data_mnist_test_sample<-data_mnist_test[sample(1:nrow(data_mnist_test), 0.27*nrow(data_mnist_test),replace = FALSE),]
+
+# Now let's check the dim of both dataset. 
+dim(data_mnist_train_sample)
+dim(data_mnist_test_sample)
+
+#Converting the output variable to factor type and naming it as "label"
+data_mnist_train_sample$label<-as.factor(data_mnist_train_sample$V1)
+summary(data_mnist_train_sample$label)
+data_mnist_test_sample$label<-as.factor(data_mnist_test_sample$V1)
+summary(data_mnist_test_sample$label)
+
+# Checking missing value in train data
+sapply(data_mnist_train_sample, function(x) sum(is.na(x))) # No missing values
+
+# Model Building
+
+#--------------------------------------------------------------------
+
+# Take the train data and test data appropriately
+#set the seed to 100, let's run it 
+set.seed(100)
+
+# randomly generate row indices for train dataset
+trainindices= sample(1:nrow(data_mnist_train_sample), 1*nrow(data_mnist_train_sample))
+# generate the train data set
+train = data_mnist_train_sample[trainindices,]
+
+#Similarly store the test data observations into an object "test".
+testindices = sample(1:nrow(data_mnist_test_sample), 1*nrow(data_mnist_test_sample))
+test = data_mnist_test_sample[testindices,]
+
+
+# Using Linear Kernel
+model_Linear<- ksvm(label~., data = train, scale = FALSE, kernel = "vanilladot")
+model_Linear
+# Predicting the model results
+evaluate_model_Linear<- predict(model_Linear, test)
+
+#confusion matrix - Linear Kernel
+confusionMatrix(evaluate_model_Linear,test$label)
+
+# Hyperparameter tuning and Cross Validation  - Linear - SVM 
+# We will use the train function from caret package to perform crossvalidation
+
+trainControl <- trainControl(method="cv", number=5,verboseIter = TRUE)
+# Number - Number of folds 
+# Method - cross validation
+
+# Evaluation metric to be considered
+metric <- "Accuracy"
+
+set.seed(7)
+
+# making a grid of C values. 
+grid <- expand.grid(C=seq(1, 5, by=1))
+
+
+# Creating a cluster for parallel computing process
+cl<-makePSOCKcluster(6)
+registerDoParallel(cl)
+# Performing 5-fold cross validation
+fit.svm <- train(label~., data=train, method="svmLinear", metric=metric,tuneGrid=grid, trControl=trainControl)
+# Stopping cluster
+stopCluster(cl)
+
+print(fit.svm)
+# Best tune at C=1 on full training set
+# Accuracy on train dataset- 0.9055529
+
+# Plotting "fit.svm" results
+plot(fit.svm)
+
+# Valdiating the model after cross validation on test data
+
+evaluate_linear_test<- predict(fit.svm, test)
+confusionMatrix(evaluate_linear_test, test$label)
+conf_linear<-confusionMatrix(evaluate_linear_test, test$label)
+
+# Accuracy on test data for linear model with 5 fold valdation   - 0.9103704
+accuracy_linear_model <- conf_linear$overall[1]
+accuracy_linear_model
+
+# Sensitivity - 0.9881423
+sensitivity <- conf_linear$byClass[1]
+sensitivity
+
+# Specificity - 0.9842271  
+specificity <- conf_linear$byClass[2]
+specificity
+
+# Using RBF Kernel
+Model_RBF <- ksvm(label~., data = train, scale = FALSE, kernel = "rbfdot")
+Model_RBF
+Evaluate_RBF<- predict(Model_RBF, test)
+
+#confusion matrix - RBF Kernel
+confusionMatrix(Evaluate_RBF,test$label)
+
+# Accuracy    - 0.9644
+
+#Hyperparameter tuning and Cross Validation - Non-Linear - SVM
+trainControl <- trainControl(method="cv", number=3,verboseIter = TRUE)
+# Number - Number of folds 
+# Method - cross validation
+
+# Evaluation metric defined
+metric <- "Accuracy"
+
+set.seed(100)
+# Making grid of "sigma" and C values. 
+grid <- expand.grid(.sigma=seq(0.000001, 0.0000016, by=0.000001), .C=seq(0.5, 3, by=0.5))
+
+# Creating a cluster for parallel computing process
+cl<-makePSOCKcluster(8)
+registerDoParallel(cl)
+fit.svm_radial <- train(label~.,data=train, method="svmRadial", metric=metric, tuneGrid=grid, trControl=trainControl)
+
+# The above line of code for fit.svm_radial ran for approx.~30 minutes
+# Stopping cluster
+stopCluster(cl)
+
+print(fit.svm_radial)
+# Best tune at C=2 and sigma = 1e-06
+# Accuracy - 0.9439988
+
+# Plotting "fit.svm_radial" results
+plot(fit.svm_radial)
+
+# Valdiating the model after cross validation on test data
+
+Evaluate_RBF_test<- predict(fit.svm_radial, test)
+confusionMatrix(Evaluate_RBF_test, test$label)
+conf_RBF<-confusionMatrix(Evaluate_RBF_test, test$label)
+
+# Accuracy on test data for RBF model with 3 fold valdation   -   0.9596296
+accuracy_RBF_model <- conf_RBF$overall[1]
+accuracy_RBF_model
+
+# Sensitivity - 0.9881423
+sensitivity <- conf_RBF$byClass[1]
+sensitivity
+
+# Specificity - 0.977918  
+specificity <- conf_RBF$byClass[2]
+specificity
+
+
+##----------------------------------------------------------------------
+#Let's try to run for the FULL TEST(100%) dataset
+data_mnist_test_Full_obs<-data_mnist_test[sample(1:nrow(data_mnist_test), 1*nrow(data_mnist_test),replace = FALSE),]
+#Converting the output variable to factor type and naming it as "label"
+data_mnist_test_Full_obs$label<-as.factor(data_mnist_test_Full_obs$V1)
+summary(data_mnist_test_Full_obs$label)
+
+#Similarly store the test data observations into an object "test_Full".
+testindices_Full = sample(1:nrow(data_mnist_test_Full_obs), 1*nrow(data_mnist_test_Full_obs))
+test_Full = data_mnist_test_Full_obs[testindices_Full,]
+
+# Valdiating the Model_RBF against FULL test data
+Evaluate_RBF_test_Full<- predict(fit.svm_radial, test_Full)
+confusionMatrix(Evaluate_RBF_test_Full, test_Full$label)
+conf_RBF_full<-confusionMatrix(Evaluate_RBF_test_Full, test_Full$label)
+
+# Accuracy on FULL test data for RBF model with 3 fold valdation   -   0.9585
+accuracy_RBF_model_on_full_test_data <- conf_RBF_full$overall[1]
+accuracy_RBF_model_on_full_test_data
+
+# Sensitivity - 0.9795918
+sensitivity <- conf_RBF_full$byClass[1]
+sensitivity
+
+# Specificity - 0.985022  
+specificity <- conf_RBF_full$byClass[2]
+specificity
+
+
+#ConclusionS:
+# 1.For Linear model:
+# The Accuracy of the model is 91.03% with 5 fold cross validation.
+# 2.For non-linear RBF model:
+# The Accuracy of the model is 95.96% on 27% of test data(which is 2700 observations) with 3 fold cross validation and best tuned at C=2 & sigma = 1e-06.
+# The Accuracy of the model is 95.85% on 100% of test data(which is 10000 observations) is observed.
+# Hence, it is concluded that Model_RBF is the best model here which should correctly classify the handwritten digits based on the pixel values given as features.
