@@ -1,0 +1,1641 @@
+# Following steps has been followed to do this analysis
+# Step 1. Build a basic model on Demographic data (Balanaced training dataset with woe data set respectively).
+# Step 2. Build a basic model on Demographic data (Balanaced training dataset with dummy data set).
+# Step 2. Data cleaning and preparation of Merged dataset (Demographic and Credit Bureau Data)
+# Step 3. EDA on Merged dataset (Demographic and Credit Bureau Data)
+# Step 4. Build a logistic regression model with WOE values on Balanced training set and Evaluate the Model
+# Step 5. Build a random forest model with WOE values on Balanced training set and Evaluate the Model
+# Step 6. Build a logistic regression model on Balanced and dummy variables imputed training set and Evaluate the Model
+# Step 7. Build a logistic regression model on Balanced and dummy variables imputed training set and Evaluate the Model
+# Step 8. Create Application Score card
+
+### Install Packages if not already installed
+# install.packages("MASS")
+# install.packages("car")
+# install.packages("caTools")
+# install.packages("caret")
+# install.packages("cowplot")
+# install.packages("corrplot") 
+# install.packages("dummies")
+# install.packages("DMwR")
+# install.packages("data.table")
+# install.packages("dplyr")
+# install.packages("e1071")
+# install.packages("ggplot2")
+# install.packages("gridExtra")
+# install.packages("GGally")
+# install.packages("Hmisc")    # To imputes missing value
+# install.packages("randomForest")
+# install.packages("ROCR")
+# install.packages("reshape2")
+# install.packages("tidyr")
+# install.packages("woeBinning")
+# install.packages("Information")
+# install.packages("knitr")
+
+library(MASS)
+library(car)
+library(caTools)
+library(caret)
+library(cowplot)
+library(corrplot)
+library(dummies)
+library(DMwR)
+library(data.table)
+library(dplyr)
+library(e1071)
+library(ggplot2)
+library(gridExtra)
+library(GGally)
+library(Hmisc)
+library(randomForest)
+library(ROCR)
+library(reshape2)
+library(tidyr)
+library(woeBinning)
+
+# Loading demographic and credit bureau  data in the working directory.
+Demographic_Data <- read.csv("Demographic data.csv", stringsAsFactors = F)
+Credit_Bureau_Data <- read.csv("Credit Bureau data.csv",stringsAsFactors = F)
+
+# Checking structure of Demographic & Credit Bureau Data dataset 
+str(Demographic_Data)
+str(Credit_Bureau_Data)
+
+# Summary of both dataset
+summary(Demographic_Data)
+summary(Credit_Bureau_Data)
+
+###Merging the datasets (Demographic_Data and Credit_Bureau_Data)
+Master_Application_Data <- merge(Demographic_Data, Credit_Bureau_Data, by = "Application.ID")
+
+
+######CHECKPOINT 1:
+
+# First we will be building model on demographic data and we will check the performance and then
+# we will build model on Merge dataset (Demographic data and Bureau data)
+################################################################################
+######          Operation on Demographic dataset               #################
+################################################################################
+
+#Checking Unique Application ID in Demographic_Data
+length(Demographic_Data$Application.ID) #71295
+length(unique(Demographic_Data$Application.ID)) #71292
+sum(duplicated(Demographic_Data$Application.ID))
+
+#Creating a dataframe enlisting the duplicate application ids.
+Application_Data_duplicate <- Demographic_Data[ which( Demographic_Data$Application.ID == '765011468' | Demographic_Data$Application.ID == '653287861' | Demographic_Data$Application.ID == '671989187') , ]
+View(Application_Data_duplicate)
+
+#Removing duplicate values from 'Application.ID' column
+Demographic_Data<-subset(Demographic_Data, !duplicated(subset(Demographic_Data, select=c(Application.ID))))
+
+
+#To check Missing OR NA values for ALL the variables
+sapply(Demographic_Data, function(x) sum(is.na(x)))
+
+### Plotting missing or NA values percentage in each feature
+Missing_NA_values <- gather(Demographic_Data %>%  summarise_all(list(~sum(is.na(.))/n())),key='feature',value = 'missing_percentage')
+
+Missing_NA_values %>%
+  ggplot(aes(x=reorder(feature,-missing_percentage),y=missing_percentage)) +
+  geom_bar(stat = 'identity',fill='red') +
+  labs(title = "Missing or NA values", x = "varaible name", y = "percentage of missing values")+
+  coord_flip()
+
+#To check BLANK values for ALL the variables
+sapply(Demographic_Data, function(x) sum(trimws(x) == "",na.rm = FALSE))
+
+# 'No.of.dependents' & 'Performance.Tag' contains missing values
+# Remove the NA values from 'No.of.dependents'
+Demographic_Data<-subset(Demographic_Data, !is.na(subset(Demographic_Data, select=c(No.of.dependents))))
+# Keep all records with the NA values for 'Performance.Tag' in a separate dataframe 
+Rejected_Demographic_Data<-subset(Demographic_Data,is.na(subset(Demographic_Data, select=c(Performance.Tag))))
+
+# Remove the 1425 NA values from 'Performance.Tag'
+Demographic_Data<-na.omit(Demographic_Data)
+
+# Remove the BLANK values
+Demographic_Data<-Demographic_Data[!(Demographic_Data$Gender == ""), ]
+Demographic_Data<-Demographic_Data[!(Demographic_Data$Marital.Status..at.the.time.of.application. == ""), ]
+Demographic_Data<-Demographic_Data[!(Demographic_Data$Education == ""), ]
+Demographic_Data<-Demographic_Data[!(Demographic_Data$Profession == ""), ]
+Demographic_Data<-Demographic_Data[!(Demographic_Data$Type.of.residence == ""), ]
+
+# Check if any NA or BLANK values still there in the data frame
+colSums(is.na(Demographic_Data))
+sapply(Demographic_Data, function(x) length(which(x == "")))
+
+# Removing 'Application.ID' from Demographic_Data dataframe
+Demographic_Data<- Demographic_Data[,-c(1)]
+str(Demographic_Data)
+
+# Changing to factors for categorical variables
+Demographic_Data$Gender<-as.factor(Demographic_Data$Gender)
+Demographic_Data$Marital.Status..at.the.time.of.application.<-as.factor(Demographic_Data$Marital.Status..at.the.time.of.application.)
+Demographic_Data$Education<-as.factor(Demographic_Data$Education)
+Demographic_Data$Profession<-as.factor(Demographic_Data$Profession)
+Demographic_Data$Type.of.residence<-as.factor(Demographic_Data$Type.of.residence)
+
+#Check the outliers in Age & Income
+quantile(Demographic_Data$Age,probs = seq(0,1,0.01),na.rm = TRUE)
+# # Outliers are in the bottom 1 % data only, hence capping all the values below 1%
+Demographic_Data$Age[which(Demographic_Data$Age<27)]<-27
+quantile(Demographic_Data$Income,probs = seq(0,1,0.01),na.rm = TRUE)
+# # Outliers are in the bottom 1 % data only, hence capping all the values below 1%
+Demographic_Data$Income[which(Demographic_Data$Income<4.5)]<-4.5
+
+# Change the Target variable to FACTOR
+Demographic_Data$Performance.Tag<-as.factor(Demographic_Data$Performance.Tag)
+str(Demographic_Data)
+
+# let's do BINNING
+#TO DO AT one shot all the variables plotting with binning
+Binning_Demographic_Data<-woe.binning(Demographic_Data, "Performance.Tag", Demographic_Data)
+woe.binning.plot(Binning_Demographic_Data, plot.range='1:10') #gives first 10 highest IV value
+
+#Based on the Information Value Analysis, Most Significant Predictors are as follows :
+# No.of.months.in.current.residence   IV=0.090
+# Income IV=0.036
+# No.of.months.in.current.company IV=0.027
+# Age IV=0.003
+
+#Please close all the plots on the right pane
+
+# Deploy the binning solution to the data frame
+# (i.e. add binned variables and corresponding WOE variables)
+woe_data_Demographic_Data <- woe.binning.deploy(Demographic_Data, Binning_Demographic_Data,add.woe.or.dum.var='woe')
+#Now let us filter the columns and keep only the woe columns and the predictor variable for modelling
+woe_data_Demographic_Data<-woe_data_Demographic_Data[,-c(1:10)]
+View(woe_data_Demographic_Data)
+woe_data_Demographic_Data<-woe_data_Demographic_Data[,-c(2,4,6,8,10,12,14,16,18,20)]
+
+
+# splitting the data between train and test
+set.seed(100)
+indices_Demographic_woe = sample.split(woe_data_Demographic_Data$Performance.Tag, SplitRatio = 0.7) #splitting indices
+train_Demographic_woe = woe_data_Demographic_Data[indices_Demographic_woe, ] # train data consisting of 70% of original obs.
+test_Demographic_woe = woe_data_Demographic_Data[!indices_Demographic_woe, ] # test data consisting of 30% of original obs.
+
+train_Demographic_woe_SMOTE <- SMOTE(Performance.Tag ~ ., train_Demographic_woe, perc.over = 750, perc.under=200)
+summary(train_Demographic_woe_SMOTE$Performance.Tag)
+
+##MODEL 1:
+## Logistic Regression with woe data--------------------------------------
+# Tag= 1 implies default, 0 implies good
+train_Demographic_woe_SMOTE_1 = glm(Performance.Tag ~ ., data = train_Demographic_woe_SMOTE, family = "binomial")
+summary(train_Demographic_woe_SMOTE_1)
+
+# Using stepwise algorithm for removing insignificant variables 
+train_Demographic_woe_SMOTE_2 <- stepAIC(train_Demographic_woe_SMOTE_1,direction = "both")
+summary(train_Demographic_woe_SMOTE_2)
+sort(vif(train_Demographic_woe_SMOTE_2))
+
+#Removing insignificant 'woe.Type.of.residence.binned'variable as per p-value
+train_Demographic_woe_SMOTE_3<-glm(formula = Performance.Tag ~ woe.No.of.months.in.current.residence.binned + 
+                                     woe.Income.binned + woe.No.of.months.in.current.company.binned + 
+                                     woe.Age.binned + woe.No.of.dependents.binned + woe.Profession.binned + 
+                                     woe.Gender.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                                   family = "binomial", data = train_Demographic_woe_SMOTE)
+
+sort(vif(train_Demographic_woe_SMOTE_3))
+summary(train_Demographic_woe_SMOTE_3)
+
+#Removing insignificant 'woe.Gender.binned'variable as per p-value
+train_Demographic_woe_SMOTE_4<-glm(formula = Performance.Tag ~ woe.No.of.months.in.current.residence.binned + 
+                                     woe.Income.binned + woe.No.of.months.in.current.company.binned + 
+                                     woe.Age.binned + woe.No.of.dependents.binned + woe.Profession.binned + 
+                                     woe.Marital.Status..at.the.time.of.application..binned, 
+                                   family = "binomial", data = train_Demographic_woe_SMOTE)
+
+sort(vif(train_Demographic_woe_SMOTE_4))
+summary(train_Demographic_woe_SMOTE_4)
+
+#Removing insignificant 'woe.Marital.Status..at.the.time.of.application..binned'variable as per p-value
+train_Demographic_woe_SMOTE_5<-glm(formula = Performance.Tag ~ woe.No.of.months.in.current.residence.binned + 
+                                     woe.Income.binned + woe.No.of.months.in.current.company.binned + 
+                                     woe.Age.binned + woe.No.of.dependents.binned + woe.Profession.binned,
+                                   family = "binomial", data = train_Demographic_woe_SMOTE)
+
+sort(vif(train_Demographic_woe_SMOTE_5))
+summary(train_Demographic_woe_SMOTE_5)
+
+#using 'train_Demographic_woe_SMOTE_5' as the Logit model to evaluate further
+#Model Evaluation started...
+
+# Predicting probabilities of responding for the test data
+test_predictions_woe_LG <- predict(train_Demographic_woe_SMOTE_5, newdata = test_Demographic_woe[,-1], type = "response")
+summary(test_predictions_woe_LG)
+
+## Model Evaluation: Logistic Regression
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_LG <- factor(ifelse(test_predictions_woe_LG >= 0.50, "yes", "no"))
+test_actual_response_LG <- factor(ifelse(test_Demographic_woe$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_LG,test_predicted_response_LG)
+
+
+
+test_conf_LG <- confusionMatrix(test_predicted_response_LG,test_actual_response_LG, positive = "yes")
+test_conf_LG
+#---------------------------------------------------------    
+
+
+perform_fn_LG <- function(cutoff) 
+{
+  test_predicted_response_LG <- factor(ifelse(test_predictions_woe_LG >= cutoff, "yes", "no"))
+  conf_LG <- confusionMatrix(test_predicted_response_LG, test_actual_response_LG, positive = "yes")
+  acc <- conf_LG$overall[1]
+  sens <- conf_LG$byClass[1]
+  spec <- conf_LG$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.75 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.99,length=100)
+
+OUT_LG = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_LG[i,] = perform_fn_LG(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_LG[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_LG[,2],col="darkgreen",lwd=2)
+lines(s,OUT_LG[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff <- s[which(abs(OUT_LG[,1]-OUT_LG[,2])<0.31)]
+cutoff
+
+# Probability cutoff is achieved at 0.32 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 32% for final model
+
+test_predicted_response_LG <- factor(ifelse(test_predictions_woe_LG >= 0.32, "yes", "no"))
+
+conf_final_LG <- confusionMatrix(test_predicted_response_LG, test_actual_response_LG, positive = "yes")
+
+acc_LG <- conf_final_LG$overall[1]
+
+sens_LG <- conf_final_LG$byClass[1]
+
+spec_LG <- conf_final_LG$byClass[2]
+
+acc_LG
+#Accuracy:0.4235992
+sens_LG
+#Sensitivity:0.7032843
+spec_LG
+#Specificity:0.4112714
+
+#How to calculate Precision & Recall:
+precision <- conf_final_LG$byClass['Pos Pred Value']
+precision
+#0.05002014
+recall <- conf_final_LG$byClass['Sensitivity']
+recall
+#0.7032843
+
+#Model Evaluation ends...................
+
+#Dummy variables creation for Demographic data
+
+# convert factors with 2 levels to numerical variables
+levels(Demographic_Data$Gender)<-c(1,0)
+Demographic_Data$Gender<- as.numeric(levels(Demographic_Data$Gender))[Demographic_Data$Gender]
+levels(Demographic_Data$Marital.Status..at.the.time.of.application.)<-c(1,0)
+Demographic_Data$Marital.Status..at.the.time.of.application.<- as.numeric(levels(Demographic_Data$Marital.Status..at.the.time.of.application.))[Demographic_Data$Marital.Status..at.the.time.of.application.]
+# creating dummy variables for factor variables with more than 2 levels
+#Namely we have to this for 5 variables present in master_data3 as follows
+
+Demographic_Data_with_dummy1<-cbind(Demographic_Data,dummy<-model.matrix(~Demographic_Data$Education-1,data=Demographic_Data)[ ,-1])
+Demographic_Data_with_dummy2<-cbind(Demographic_Data_with_dummy1,dummy1<-model.matrix(~Demographic_Data$Profession-1,data=Demographic_Data)[ ,-1])
+Demographic_Data_with_dummy3<-cbind(Demographic_Data_with_dummy2,dummy2<-model.matrix(~Demographic_Data$Type.of.residence-1,data=Demographic_Data)[ ,-1])
+
+
+# Dropping the original factor variables now
+Demographic_Data_dummy<-Demographic_Data_with_dummy3[ ,-c(6,7,8)]
+View(Demographic_Data_dummy)
+
+#Labelling the dummy variables
+setnames(Demographic_Data_dummy, 
+         old = c('Demographic_Data$EducationMasters','Demographic_Data$EducationOthers',
+                 'Demographic_Data$EducationPhd','Demographic_Data$EducationProfessional','Demographic_Data$ProfessionSE',
+                 'Demographic_Data$ProfessionSE_PROF','Demographic_Data$Type.of.residenceLiving with Parents','Demographic_Data$Type.of.residenceOthers',
+                 'Demographic_Data$Type.of.residenceOwned','Demographic_Data$Type.of.residenceRented'),
+         new = c('EducationMasters','EducationOthers',
+                 'EducationPhd','EducationProfessional','ProfessionSE',
+                 'ProfessionSE_PROF','Type.of.residenceLivingwithParents','Type.of.residenceOthers',
+                 'Type.of.residenceOwned','Type.of.residenceRented'))
+
+# splitting the data between train and test
+set.seed(100)
+
+
+splitindices_dummy = sample.split(Demographic_Data_dummy$Performance.Tag, SplitRatio = 0.7) #splitting indices
+train_model_dummy = Demographic_Data_dummy[splitindices_dummy, ] # train data consisting of 70% of original obs.
+test_model_dummy = Demographic_Data_dummy[!splitindices_dummy, ] # test data consisting of 30% of original obs.
+
+# Apply SMOTE to balance the dataset first
+#library(DMwR)
+train_model_dummy_smote <- SMOTE(Performance.Tag ~ ., train_model_dummy, perc.over = 400, perc.under=200)
+summary(train_model_dummy_smote$Performance.Tag)
+
+
+##MODEL 2:
+## Random Forest with dummy variables data--------------------------------------
+train_model_dummy_smote_RF <- randomForest(Performance.Tag ~., data = train_model_dummy_smote, proximity = F, do.trace = T, mtry = 5)
+
+# Predict response for test data
+Prediction_dummy_RF <- predict(train_model_dummy_smote_RF, test_model_dummy[, -8], type = "prob")
+summary(Prediction_dummy_RF)
+
+# Model Evaluation starts................
+## Model Evaluation: Random Forest with dummy data
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_RF <- factor(ifelse(Prediction_dummy_RF[ ,2] >= 0.50, "yes", "no"))
+test_actual_response_RF <- factor(ifelse(test_model_dummy$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_RF,test_predicted_response_RF)
+
+
+
+test_conf_RF <- confusionMatrix(test_predicted_response_RF,test_actual_response_RF, positive = "yes")
+test_conf_RF
+#---------------------------------------------------------    
+
+
+perform_fn_RF <- function(cutoff_RF) 
+{
+  test_predicted_response_RF <- factor(ifelse(Prediction_dummy_RF[ ,2] >= cutoff_RF, "yes", "no"))
+  conf_RF <- confusionMatrix(test_predicted_response_RF, test_actual_response_RF, positive = "yes")
+  acc <- conf_RF$overall[1]
+  sens <- conf_RF$byClass[1]
+  spec <- conf_RF$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.75 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.99,length=100)
+
+OUT_RF = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_RF[i,] = perform_fn_RF(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_RF[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_RF[,2],col="darkgreen",lwd=2)
+lines(s,OUT_RF[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff <- s[which(abs(OUT_RF[,1]-OUT_RF[,2])<0.17)]
+cutoff
+
+# Probability cutoff is achieved at 0.18 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 18% for final model
+
+test_predicted_response_RF <- factor(ifelse(Prediction_dummy_RF[ ,2] >= 0.188, "yes", "no"))
+
+conf_final_RF <- confusionMatrix(test_predicted_response_RF, test_actual_response_RF, positive = "yes")
+
+acc_RF <- conf_final_RF$overall[1]
+
+sens_RF <- conf_final_RF$byClass[1]
+
+spec_RF <- conf_final_RF$byClass[2]
+
+acc_RF
+#Accuracy:0.5240008
+sens_RF
+#Sensitivity:0.5696489
+spec_RF
+#Specificity:0.5219887
+
+#How to calculate Precision & Recall:
+precision_RF <- conf_final_RF$byClass['Pos Pred Value']
+precision_RF
+#0.04990574
+recall_RF <- conf_final_RF$byClass['Sensitivity']
+recall_RF
+#0.5696489
+
+#Model Evaluation ends...................
+
+#hence, it can be concluded that for Demographic data set random forest  model (over dummy variables)
+#gives a moderate specificity of ~52%
+
+######CHECKPOINT 2:
+
+# Now we will be building model on both demographic data & credit bureau data and we will check the performance 
+
+################################################################################
+######          Operation on Merge dataset               #################
+################################################################################
+
+View(Master_Application_Data)
+str(Master_Application_Data)
+
+#Checking Unique Application ID in Demographic_Data
+length(Master_Application_Data$Application.ID) #71301
+length(unique(Master_Application_Data$Application.ID)) #71292
+sum(duplicated(Master_Application_Data$Application.ID))  #9
+
+
+#Removing duplicate values from 'Application.ID' column
+Master_Application_Data<-subset(Master_Application_Data, !duplicated(subset(Master_Application_Data, select=c(Application.ID))))
+
+#2 columns "Performance.Tag.x" and "Performance.Tag.y" are identical
+identical(Master_Application_Data$Performance.Tag.x,Master_Application_Data$Performance.Tag.y)
+
+#Removing the 2 identical columns and keeping only 1 column as "Performance.Tag"
+Master_Application_Data<-Master_Application_Data[ ,-c(12)]
+Master_Application_Data$Performance.Tag<-Master_Application_Data$Performance.Tag.y
+Master_Application_Data<-Master_Application_Data[ ,-c(29)]
+View(Master_Application_Data)
+
+#To check Missing OR NA values for ALL the variables
+sapply(Master_Application_Data, function(x) sum(is.na(x)))
+
+### Plotting missing or NA values percentage in each feature
+Missing_NA_values_merged <- gather(Master_Application_Data %>%  summarise_all(list(~sum(is.na(.))/n())),key='feature',value = 'missing_percentage')
+
+Missing_NA_values_merged %>%
+  ggplot(aes(x=reorder(feature,-missing_percentage),y=missing_percentage)) +
+  geom_bar(stat = 'identity',fill='red') +
+  labs(title = "Missing or NA values", x = "varaible name", y = "percentage of missing values")+
+  coord_flip()
+
+
+
+# contains missing values
+#'No.of.dependents' # remove the 3 rows
+#'Avgas.CC.Utilization.in.last.12.months'---treat the 1058 NA values
+#'No.of.trades.opened.in.last.6.months'  --remove the 1 row
+#'Presence.of.open.home.loan' & 'Outstanding.Balance'  ----remove the 272 rows respectively
+#'Performance.Tag' ---keep 1425 NA's in Rejected data set for validation of model 
+#'
+# Remove the NA values from 'No.of.dependents'
+Master_Application_Data<-subset(Master_Application_Data, !is.na(subset(Master_Application_Data, select=c(No.of.dependents))))
+Master_Application_Data<-subset(Master_Application_Data, !is.na(subset(Master_Application_Data, select=c(No.of.trades.opened.in.last.6.months))))
+Master_Application_Data<-subset(Master_Application_Data, !is.na(subset(Master_Application_Data, select=c(Presence.of.open.home.loan))))
+Master_Application_Data<-subset(Master_Application_Data, !is.na(subset(Master_Application_Data, select=c(Outstanding.Balance))))
+
+#Treating NA values in 'Avgas.CC.Utilization.in.last.12.months'Replacing all the missing value with mean/median whichever is better.
+Master_Application_Data$Avgas.CC.Utilization.in.last.12.months <- impute(Master_Application_Data$Avgas.CC.Utilization.in.last.12.months, median)
+
+#Standardising numerical data
+Master_Application_Data$Avgas.CC.Utilization.in.last.12.months <- as.numeric(Master_Application_Data$Avgas.CC.Utilization.in.last.12.months)
+
+
+#To check BLANK values for ALL the variables
+sapply(Master_Application_Data, function(x) sum(trimws(x) == "",na.rm = FALSE))
+
+# Remove the BLANK values
+Master_Application_Data<-Master_Application_Data[!(Master_Application_Data$Gender == ""), ]
+Master_Application_Data<-Master_Application_Data[!(Master_Application_Data$Marital.Status..at.the.time.of.application. == ""), ]
+Master_Application_Data<-Master_Application_Data[!(Master_Application_Data$Education == ""), ]
+Master_Application_Data<-Master_Application_Data[!(Master_Application_Data$Profession == ""), ]
+Master_Application_Data<-Master_Application_Data[!(Master_Application_Data$Type.of.residence == ""), ]
+
+# Check if any NA or BLANK values still there in the data frame
+colSums(is.na(Master_Application_Data))
+sapply(Master_Application_Data, function(x) length(which(x == "")))
+
+# Keep all records with the NA values for 'Performance.Tag' in a separate dataframe 
+Rejected_Application_Data<-subset(Master_Application_Data,is.na(subset(Master_Application_Data, select=c(Performance.Tag))))
+
+# Remove the 1423 NA values from 'Performance.Tag'
+Master_Application_Data<-na.omit(Master_Application_Data)
+colSums(is.na(Master_Application_Data))
+View(Master_Application_Data)
+
+# Removing the ID column--'Application.ID' from Master_Application_Data dataframe
+Master_Application_Data<- Master_Application_Data[,-c(1)]
+str(Master_Application_Data)
+
+# Changing to factors for categorical variables
+Master_Application_Data$Gender<-as.factor(Master_Application_Data$Gender)
+Master_Application_Data$Marital.Status..at.the.time.of.application.<-as.factor(Master_Application_Data$Marital.Status..at.the.time.of.application.)
+Master_Application_Data$Education<-as.factor(Master_Application_Data$Education)
+Master_Application_Data$Profession<-as.factor(Master_Application_Data$Profession)
+Master_Application_Data$Type.of.residence<-as.factor(Master_Application_Data$Type.of.residence)
+
+str(Master_Application_Data)
+
+#hence, now we only have Accepted application data without the NA's
+Accepted_Application_Data<-Master_Application_Data
+
+#Replacing erroneous values in age column with the mean
+Accepted_Application_Data$Age <- ifelse(Accepted_Application_Data$Age < 18, round(mean(Accepted_Application_Data$Age,na.rm=T),0), Accepted_Application_Data$Age)
+#Negative income values is replaced with mean value of all data
+Accepted_Application_Data$Income <- ifelse(Accepted_Application_Data$Income < 0, round(mean(Accepted_Application_Data$Income,na.rm=T),0), Accepted_Application_Data$Income)
+
+
+#Calculating Response rate
+table(Accepted_Application_Data$Performance.Tag)
+response <- 2934/(2934+66512)
+response  #4.2%
+
+##################### EDA for the merge dataset############################
+EDA_Accepted_Application_Data <- Accepted_Application_Data
+
+#######Deriving Insights on Age...............
+#Checking outliers for Age
+quantile(EDA_Accepted_Application_Data$Age,seq(0,1,0.01))
+boxplot(EDA_Accepted_Application_Data$Age)
+# # Outliers are in the bottom 1 % data only, hence capping all the values below 1%
+#Creating age bins
+EDA_Accepted_Application_Data$BinningAge <- as.factor(cut(EDA_Accepted_Application_Data$Age, breaks = c(18, 25, 35, 45, 55, 65)))
+aggregate_age <- merge(aggregate(Performance.Tag ~ BinningAge, EDA_Accepted_Application_Data, mean),aggregate(Performance.Tag ~ BinningAge,EDA_Accepted_Application_Data, sum),by = "BinningAge")
+ 
+# Adding No.of_prospect
+count <- data.frame(table(EDA_Accepted_Application_Data$BinningAge))
+count <- count[,2]
+aggregate_age <- cbind(aggregate_age,count)
+
+# changing column name of each variables in aggregate_age dataframe
+colnames(aggregate_age) <- c("Age", "Default_Rate", "No_Of_Default","No_Of_Applicants") 
+
+# Round Off the values
+aggregate_age$Default_Rate <- format(round(aggregate_age$Default_Rate, 4))
+View(aggregate_age)
+
+# Let's see the default rate of each age bucket in the plot
+ggplot(aggregate_age, aes(Age, No_Of_Applicants,label = Default_Rate)) + 
+  geom_bar(stat = 'identity',color="black",fill="lightgreen") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  geom_text(size = 3, vjust = -0.5) + xlab("Age Bins") +
+  ylab("Number of customer in the age bin")
+
+# Removing BinningAge column
+EDA_Accepted_Application_Data$BinningAge <- NULL
+
+#######Deriving Insights of Income.........................
+
+##Checking outliers for Income
+quantile(EDA_Accepted_Application_Data$Income,seq(0,1,0.01))
+boxplot(EDA_Accepted_Application_Data$Income)
+summary(EDA_Accepted_Application_Data$Income)
+
+#Plotting income to derive insights from customer Income
+ggplot(EDA_Accepted_Application_Data,aes(x=Income)) +geom_bar(color="black",fill="lightgreen")
+
+#Creating Income Bins
+EDA_Accepted_Application_Data$BinningIncome <- as.factor(cut(EDA_Accepted_Application_Data$Income, breaks = c(0, 10, 20, 30, 40, 50, 60),include.lowest = TRUE))
+
+aggregate_income <- merge(aggregate(Performance.Tag ~ BinningIncome, EDA_Accepted_Application_Data, mean),aggregate(Performance.Tag ~ BinningIncome,EDA_Accepted_Application_Data, sum),by = "BinningIncome")
+                                                                                                                    
+# Adding No.of_prospect
+count <- data.frame(table(EDA_Accepted_Application_Data$BinningIncome))
+count <- count[,2]
+aggregate_income <- cbind(aggregate_income,count)
+
+# changing column name of each variables in aggregate_income dataframe
+colnames(aggregate_income) <- c("Income", "Default_Rate", "No_Of_Default","No_Of_Applicants")
+
+
+# Round Off the values
+aggregate_income$Default_Rate <- format(round(aggregate_income$Default_Rate, 4))
+View(aggregate_income)
+
+# Let's see the default rate of each age bucket in the plot
+ggplot(aggregate_income, aes(Income, No_Of_Applicants,label = Default_Rate)) + 
+  geom_bar(stat = 'identity',color="black",fill="lightgreen") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  geom_text(size = 3, vjust = -0.5) + xlab("Income Bins") +
+  ylab("Number of customer in the Income bin")
+
+# Removing BinningIncome column
+EDA_Accepted_Application_Data$BinningIncome <- NULL
+
+############Deriving Insights for No.of.months.in.current.residence......................
+##Checking outliers for No of Months in Current Residence
+quantile(EDA_Accepted_Application_Data$No.of.months.in.current.residence,seq(0,1,0.01))
+boxplot(EDA_Accepted_Application_Data$No.of.months.in.current.residence)
+summary(EDA_Accepted_Application_Data$No.of.months.in.current.residence)
+
+#Plotting to derive insights from No.of.months.in.current.residence Variable
+ggplot(EDA_Accepted_Application_Data,aes(x=No.of.months.in.current.residence)) +geom_bar(color="black",fill="lightgreen")
+
+#Creating Bins for No.of.months.in.current.residence Variable
+EDA_Accepted_Application_Data$BinningCurentResidence <- as.factor(cut(EDA_Accepted_Application_Data$No.of.months.in.current.residence, breaks = c(0, 20, 40, 60, 80, 100, 130)))
+aggregate_current_residence <- merge(aggregate(Performance.Tag ~ BinningCurentResidence, EDA_Accepted_Application_Data, mean),aggregate(Performance.Tag ~ BinningCurentResidence,EDA_Accepted_Application_Data, sum),by = "BinningCurentResidence")
+                                                                                                                                         
+# Adding No.of_prospect
+count <- data.frame(table(EDA_Accepted_Application_Data$BinningCurentResidence))
+count <- count[,2]
+aggregate_current_residence <- cbind(aggregate_current_residence,count)
+
+# changing column name of each variables in aggregate_current_residence dataframe
+colnames(aggregate_current_residence) <- c("Current_Residence", "Default_Rate", "No_Of_Default","No_Of_Applicants")
+
+# Round Off the values
+aggregate_current_residence$Default_Rate <- format(round(aggregate_current_residence$Default_Rate, 4))
+
+# Let's see the default rate of each age bucket in the plot
+ggplot(aggregate_current_residence, aes(Current_Residence, No_Of_Applicants,label = Default_Rate)) + 
+  geom_bar(stat = 'identity',color="black",fill="lightgreen") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  geom_text(size = 3, vjust = -0.5) + xlab("Current_Residence Bins") +
+  ylab("Number of customer in the Current_Residence bin")
+
+# Removing BinningCurentResidence column
+EDA_Accepted_Application_Data$BinningCurentResidence <- NULL
+
+#################Deriving Insights for No of Months in Current Company.....................................
+
+##Checking outliers for No of Months in Current Company
+quantile(EDA_Accepted_Application_Data$No.of.months.in.current.company,seq(0,1,0.01))
+boxplot(EDA_Accepted_Application_Data$No.of.months.in.current.company)
+summary(EDA_Accepted_Application_Data$No.of.months.in.current.company)
+
+# Capping the Upper values of Current Months in company with 75
+EDA_Accepted_Application_Data$No.of.months.in.current.company[which(EDA_Accepted_Application_Data$No.of.months.in.current.company>74)]<-74
+
+#Plotting to derive insights from No.of.months.in.current.company Variable
+ggplot(EDA_Accepted_Application_Data,aes(x=No.of.months.in.current.company)) +geom_bar(color="black",fill="lightgreen")
+
+#Creating Bins for No.of.months.in.current.company Variable
+EDA_Accepted_Application_Data$BinningCurrentCompany <- as.factor(cut(EDA_Accepted_Application_Data$No.of.months.in.current.company, breaks = c(0, 15, 30, 45, 60, 75)))
+aggregate_current_company <- merge(aggregate(Performance.Tag ~ BinningCurrentCompany, EDA_Accepted_Application_Data, mean),aggregate(Performance.Tag ~ BinningCurrentCompany,EDA_Accepted_Application_Data, sum),by = "BinningCurrentCompany")
+                                                                                                                                      
+# Adding No.of_prospect
+count <- data.frame(table(EDA_Accepted_Application_Data$BinningCurrentCompany))
+count <- count[,2]
+aggregate_current_company <- cbind(aggregate_current_company,count)
+
+# changing column name of each variables in aggregate_current_company dataframe
+colnames(aggregate_current_company) <- c("Current_Company", "Default_Rate", "No_Of_Default","No_Of_Applicants")
+
+# Round Off the values
+aggregate_current_company$Default_Rate <- format(round(aggregate_current_company$Default_Rate, 4))
+View(aggregate_current_company)
+
+# Let's see the default rate of each age bucket in the plot
+ggplot(aggregate_current_company, aes(Current_Company, No_Of_Applicants,label = Default_Rate)) + 
+  geom_bar(stat = 'identity',color="black",fill="lightgreen") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  geom_text(size = 3, vjust = -0.5) + xlab("Current_Company Bins") +
+  ylab("Number of customer in the Current_Company bin")
+
+#remove the BinningCurrentCompany column
+EDA_Accepted_Application_Data$BinningCurrentCompany <- NULL
+
+##############Let' s do the WOE analysis now##############
+# Change the Target variable to FACTOR
+Accepted_Application_Data$Performance.Tag<-as.factor(Accepted_Application_Data$Performance.Tag)
+str(Accepted_Application_Data)
+
+# let's do BINNING
+#TO DO AT one shot all the variables plotting with binning
+Binning_Merged_Data<-woe.binning(Accepted_Application_Data, "Performance.Tag", Accepted_Application_Data)
+woe.binning.plot(Binning_Merged_Data, plot.range='1:10') #gives first 10 highest IV value
+woe.binning.plot(Binning_Merged_Data, plot.range='11:20') #gives the second 10 Highest IV value
+
+#Based on the Information Value Analysis, Most Significant Predictors are as follows :
+# Avgas.CC.Utilization.in.last.12.months    IV=0.302
+# No.of.trades.opened.in.last.12.months     IV=0.270
+# No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. IV=0.264
+# No.of.trades.opened.in.last.12.months     IV=0.255
+# No.of.times.30.DPD.or.worse.in.last.6.months     IV=0.235
+# No.of.times.30.DPD.or.worse.in.last.12.months   IV=0.214
+# No.of.PL.trades.opened.in.last.6.months   IV=0.213
+# No.of.times.90.DPD.or.worse.in.last.12.months   IV=0.210
+# No.of.times.60.DPD.or.worse.in.last.6.months    IV=0.207
+# Total.No.of.Trades                        IV=0.187
+
+#By convention the values of the IV statistic in credit scoring can be interpreted as follows.
+#If the IV statistic is:
+#Less than 0.02, then the predictor is not useful for modeling (separating the Goods from the Bads)
+#0.02 to 0.1, then the predictor has only a weak relationship to the Goods/Bads odds ratio
+#0.1 to 0.3, then the predictor has a medium strength relationship to the Goods/Bads odds ratio
+#0.3 to 0.5, then the predictor has a strong relationship to the Goods/Bads odds ratio.
+#> 0.5, suspicious relationship (Check once)
+
+#Please close all the plots on the right pane
+
+# Deploy the binning solution to the data frame
+# (i.e. add binned variables and corresponding WOE variables)
+woe_data_Merged_Data <- woe.binning.deploy(Accepted_Application_Data, Binning_Merged_Data,add.woe.or.dum.var='woe')
+#Now let us filter the columns and keep only the woe columns and the predictor variable for modelling
+woe_data_Merged_Data<-woe_data_Merged_Data[,-c(1:27)]
+View(woe_data_Merged_Data)
+woe_data_Merged_Data<-woe_data_Merged_Data[,-c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54)]
+
+
+# splitting the data between train and test
+set.seed(100)
+indices_Merged_woe = sample.split(woe_data_Merged_Data$Performance.Tag, SplitRatio = 0.7) #splitting indices
+train_Merged_woe = woe_data_Merged_Data[indices_Merged_woe, ] # train data consisting of 70% of original obs.
+test_Merged_woe = woe_data_Merged_Data[!indices_Merged_woe, ] # test data consisting of 30% of original obs.
+
+train_Merged_woe_SMOTE <- SMOTE(Performance.Tag ~ ., train_Merged_woe, perc.over = 750, perc.under=200)
+summary(train_Merged_woe_SMOTE$Performance.Tag)
+
+##MODEL 1:
+## Logistic Regression with woe data for the MERGED data set--------------------------------------
+# Tag= 1 implies default, 0 implies good
+train_Merged_woe_SMOTE_1 = glm(Performance.Tag ~ ., data = train_Merged_woe_SMOTE, family = "binomial")
+summary(train_Merged_woe_SMOTE_1)
+
+# Using stepwise algorithm for removing insignificant variables 
+train_Merged_woe_SMOTE_2 <- stepAIC(train_Merged_woe_SMOTE_1,direction = "both")
+summary(train_Merged_woe_SMOTE_2)
+sort(vif(train_Merged_woe_SMOTE_2))
+
+#Removing insignificant 'woe.No.of.Inquiries.in.last.12.months..excluding.home...auto.loans..binned'variable as per VIF
+train_Merged_woe_SMOTE_3<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.PL.trades.opened.in.last.6.months.binned + woe.No.of.times.90.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned + woe.Outstanding.Balance.binned + 
+                                woe.No.of.months.in.current.residence.binned + woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Gender.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_3))
+summary(train_Merged_woe_SMOTE_3)
+
+#Removing insignificant 'woe.No.of.PL.trades.opened.in.last.6.months.binned'variable as per VIF
+train_Merged_woe_SMOTE_4<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.times.90.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned + woe.Outstanding.Balance.binned + 
+                                woe.No.of.months.in.current.residence.binned + woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Gender.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_4))
+summary(train_Merged_woe_SMOTE_4)
+
+#Removing insignificant 'woe.Outstanding.Balance.binned 'variable as per p-value
+train_Merged_woe_SMOTE_5<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.times.90.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned +
+                                woe.No.of.months.in.current.residence.binned + woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Gender.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_5))
+summary(train_Merged_woe_SMOTE_5)
+
+#Removing insignificant 'woe.Gender.binned 'variable as per p-value
+train_Merged_woe_SMOTE_6<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.times.90.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned +
+                                woe.No.of.months.in.current.residence.binned + woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_6))
+summary(train_Merged_woe_SMOTE_6)
+
+#Removing insignificant 'woe.No.of.times.90.DPD.or.worse.in.last.12.months.binned 'variable as per VIF value
+train_Merged_woe_SMOTE_7<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned +
+                                woe.No.of.months.in.current.residence.binned + woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_7))
+summary(train_Merged_woe_SMOTE_7)
+
+#Removing insignificant 'woe.No.of.months.in.current.residence.binned  'variable as per p- value
+train_Merged_woe_SMOTE_8<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned +
+                                woe.Income.binned + 
+                                woe.Presence.of.open.home.loan.binned + woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_8))
+summary(train_Merged_woe_SMOTE_8)
+
+#Removing insignificant 'woe.Presence.of.open.home.loan.binned  'variable as per p- value
+train_Merged_woe_SMOTE_9<-glm(formula = Performance.Tag ~ woe.Avgas.CC.Utilization.in.last.12.months.binned + 
+                                woe.No.of.times.30.DPD.or.worse.in.last.12.months.binned + 
+                                woe.No.of.Inquiries.in.last.6.months..excluding.home...auto.loans..binned + 
+                                woe.No.of.trades.opened.in.last.6.months.binned +
+                                woe.Income.binned + 
+                                woe.Age.binned + 
+                                woe.No.of.dependents.binned + woe.Presence.of.open.auto.loan.binned + 
+                                woe.Type.of.residence.binned + woe.Marital.Status..at.the.time.of.application..binned, 
+                              family = "binomial", data = train_Merged_woe_SMOTE)
+
+sort(vif(train_Merged_woe_SMOTE_9))
+summary(train_Merged_woe_SMOTE_9)
+
+#using 'train_Merged_woe_SMOTE_9' as the Logit model to evaluate further
+#Model Evaluation started...
+
+# Predicting probabilities of responding for the test data
+test_predictions_woe_merged_LG <- predict(train_Merged_woe_SMOTE_9, newdata = test_Merged_woe[,-1], type = "response")
+summary(test_predictions_woe_merged_LG)
+
+## Model Evaluation: Logistic Regression
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_merged_LG <- factor(ifelse(test_predictions_woe_merged_LG >= 0.50, "yes", "no"))
+test_actual_response_merged_LG <- factor(ifelse(test_Merged_woe$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_merged_LG,test_predicted_response_merged_LG)
+
+
+
+test_conf_merged_LG <- confusionMatrix(test_predicted_response_merged_LG,test_actual_response_merged_LG, positive = "yes")
+test_conf_merged_LG
+#---------------------------------------------------------    
+
+
+perform_fn_merged_LG <- function(cutoff_merged_LG) 
+{
+  test_predicted_response_merged_LG <- factor(ifelse(test_predictions_woe_merged_LG >= cutoff_merged_LG, "yes", "no"))
+  conf_merged_LG <- confusionMatrix(test_predicted_response_merged_LG, test_actual_response_merged_LG, positive = "yes")
+  acc <- conf_merged_LG$overall[1]
+  sens <- conf_merged_LG$byClass[1]
+  spec <- conf_merged_LG$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.99 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.99,length=100)
+
+OUT_MERGED_LG = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_MERGED_LG[i,] = perform_fn_merged_LG(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_MERGED_LG[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_MERGED_LG[,2],col="darkgreen",lwd=2)
+lines(s,OUT_MERGED_LG[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff_merged_LG <- s[which(abs(OUT_MERGED_LG[,1]-OUT_MERGED_LG[,2])<0.38)]
+cutoff_merged_LG
+
+# Probability cutoff is achieved at 0.38 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 38% for final model
+
+test_predicted_response_merged_LG <- factor(ifelse(test_predictions_woe_merged_LG >= 0.38, "yes", "no"))
+
+conf_final_merged_LG <- confusionMatrix(test_predicted_response_merged_LG, test_actual_response_merged_LG, positive = "yes")
+
+acc_merged_LG <- conf_final_merged_LG$overall[1]
+
+sens_merged_LG <- conf_final_merged_LG$byClass[1]
+
+spec_merged_LG <- conf_final_merged_LG$byClass[2]
+
+acc_merged_LG
+#Accuracy:0.6230681
+sens_merged_LG
+#Sensitivity:0.6284091
+spec_merged_LG
+#Specificity:0.6228325
+
+
+#Model Evaluation ends...................
+
+##MODEL 4:
+## Random Forest with woe variables data--------------------------------------
+train_Merged_woe_SMOTE_RF <- randomForest(Performance.Tag ~., data = train_Merged_woe_SMOTE, proximity = F, do.trace = T, mtry = 5)
+
+# Predict response for test data
+Prediction_woe_merged_RF <- predict(train_Merged_woe_SMOTE_RF, test_Merged_woe[, -1], type = "prob")
+summary(Prediction_woe_merged_RF)
+
+## Model Evaluation: Random Forest with WOE data
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_merged_RF <- factor(ifelse(Prediction_woe_merged_RF[ ,2] >= 0.50, "yes", "no"))
+test_actual_response_merged_RF <- factor(ifelse(test_Merged_woe$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_merged_RF,test_predicted_response_merged_RF)
+
+
+
+test_conf_merged_RF <- confusionMatrix(test_predicted_response_merged_RF,test_actual_response_merged_RF, positive = "yes")
+test_conf_merged_RF
+#---------------------------------------------------------    
+
+
+perform_fn_merged_RF <- function(cutoff_merged_RF) 
+{
+  test_predicted_response_merged_RF <- factor(ifelse(Prediction_woe_merged_RF[ ,2] >= cutoff_merged_RF, "yes", "no"))
+  conf_merged_RF <- confusionMatrix(test_predicted_response_merged_RF, test_actual_response_merged_RF, positive = "yes")
+  acc <- conf_merged_RF$overall[1]
+  sens <- conf_merged_RF$byClass[1]
+  spec <- conf_merged_RF$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.99 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.99,length=100)
+
+OUT_merged_RF = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_merged_RF[i,] = perform_fn_merged_RF(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_merged_RF[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_merged_RF[,2],col="darkgreen",lwd=2)
+lines(s,OUT_merged_RF[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff_merged_RF <- s[which(abs(OUT_merged_RF[,1]-OUT_merged_RF[,2])<0.09)]
+cutoff_merged_RF
+
+# Probability cutoff is achieved at 0.09 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 9% for final model
+
+test_predicted_response_merged_RF <- factor(ifelse(Prediction_woe_merged_RF[ ,2] >= 0.09, "yes", "no"))
+
+conf_final_merged_RF <- confusionMatrix(test_predicted_response_merged_RF, test_actual_response_merged_RF, positive = "yes")
+
+acc_merged_RF <- conf_final_merged_RF$overall[1]
+
+sens_merged_RF <- conf_final_merged_RF$byClass[1]
+
+spec_merged_RF <- conf_final_merged_RF$byClass[2]
+
+acc_merged_RF
+#Accuracy:0.6082845
+sens_merged_RF
+#Sensitivity:0.5625
+spec_merged_RF
+#Specificity:0.6103037
+
+# Model Evaluation Ends...........
+
+
+######################Let's do DUMMY variables imputaion###########
+#Dummy variables creation for Merged data
+
+str(Accepted_Application_Data)
+Accepted_Application_Data_Dummy<-Accepted_Application_Data
+
+# convert factors with 2 levels to numerical variables:
+levels(Accepted_Application_Data_Dummy$Gender)<-c(1,0)
+Accepted_Application_Data_Dummy$Gender<- as.numeric(levels(Accepted_Application_Data_Dummy$Gender))[Accepted_Application_Data_Dummy$Gender]
+levels(Accepted_Application_Data_Dummy$Marital.Status..at.the.time.of.application.)<-c(1,0)
+Accepted_Application_Data_Dummy$Marital.Status..at.the.time.of.application.<- as.numeric(levels(Accepted_Application_Data_Dummy$Marital.Status..at.the.time.of.application.))[Accepted_Application_Data_Dummy$Marital.Status..at.the.time.of.application.]
+
+# creating dummy variables for factor variables with more than 2 levels
+#Namely we have to this for 5 variables present in master_data3 as follows
+
+Accepted_Application_Data_Dummy1<-cbind(Accepted_Application_Data_Dummy,dummy<-model.matrix(~Accepted_Application_Data_Dummy$Education-1,data=Accepted_Application_Data_Dummy)[ ,-1])
+Accepted_Application_Data_Dummy2<-cbind(Accepted_Application_Data_Dummy1,dummy1<-model.matrix(~Accepted_Application_Data_Dummy$Profession-1,data=Accepted_Application_Data_Dummy)[ ,-1])
+Accepted_Application_Data_Dummy3<-cbind(Accepted_Application_Data_Dummy2,dummy2<-model.matrix(~Accepted_Application_Data_Dummy$Type.of.residence-1,data=Accepted_Application_Data_Dummy)[ ,-1])
+
+
+# Dropping the original factor variables now
+Accepted_Application_Data_Dummy<-Accepted_Application_Data_Dummy3[ ,-c(6,7,8)]
+View(Accepted_Application_Data_Dummy)
+
+#Labelling the dummy variables
+setnames(Accepted_Application_Data_Dummy, 
+         old = c('Accepted_Application_Data_Dummy$EducationMasters','Accepted_Application_Data_Dummy$EducationOthers',
+                 'Accepted_Application_Data_Dummy$EducationPhd','Accepted_Application_Data_Dummy$EducationProfessional','Accepted_Application_Data_Dummy$ProfessionSE',
+                 'Accepted_Application_Data_Dummy$ProfessionSE_PROF','Accepted_Application_Data_Dummy$Type.of.residenceLiving with Parents','Accepted_Application_Data_Dummy$Type.of.residenceOthers',
+                 'Accepted_Application_Data_Dummy$Type.of.residenceOwned','Accepted_Application_Data_Dummy$Type.of.residenceRented'),
+         new = c('EducationMasters','EducationOthers',
+                 'EducationPhd','EducationProfessional','ProfessionSE',
+                 'ProfessionSE_PROF','Type.of.residenceLivingwithParents','Type.of.residenceOthers',
+                 'Type.of.residenceOwned','Type.of.residenceRented'))
+
+View(Accepted_Application_Data_Dummy)
+
+# splitting the data between train and test
+set.seed(100)
+
+
+splitindices_merged_dummy = sample.split(Accepted_Application_Data_Dummy$Performance.Tag, SplitRatio = 0.7) #splitting indices
+train_merged_model_dummy = Accepted_Application_Data_Dummy[splitindices_merged_dummy, ] # train data consisting of 70% of original obs.
+test_merged_model_dummy = Accepted_Application_Data_Dummy[!splitindices_merged_dummy, ] # test data consisting of 30% of original obs.
+
+# Apply SMOTE to balance the dataset first
+#library(DMwR)
+train_merged_model_dummy_smote <- SMOTE(Performance.Tag ~ ., train_merged_model_dummy, perc.over = 400, perc.under=200)
+summary(train_merged_model_dummy_smote$Performance.Tag)
+
+
+##MODEL 5:
+## Logistic model with dummy variables data--------------------------------------
+train_Merged_dummy_SMOTE_1 = glm(Performance.Tag ~ ., data = train_merged_model_dummy_smote, family = "binomial")
+summary(train_Merged_dummy_SMOTE_1)
+
+# Using stepwise algorithm for removing insignificant variables 
+train_Merged_dummy_SMOTE_2 <- stepAIC(train_Merged_dummy_SMOTE_1,direction = "both")
+summary(train_Merged_dummy_SMOTE_2)
+sort(vif(train_Merged_dummy_SMOTE_2))
+
+#Removing insignificant 'Outstanding.Balance'variable as per high VIF
+train_Merged_dummy_SMOTE_3<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.60.DPD.or.worse.in.last.6.months + No.of.times.30.DPD.or.worse.in.last.6.months + 
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.6.months + No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Total.No.of.Trades + 
+                                  Presence.of.open.auto.loan + EducationProfessional + Type.of.residenceOthers, 
+                                family = "binomial", data = train_merged_model_dummy_smote)
+
+summary(train_Merged_dummy_SMOTE_3)
+sort(vif(train_Merged_dummy_SMOTE_3))
+
+#Removing insignificant 'No.of.times.30.DPD.or.worse.in.last.6.months'variable as per high VIF
+train_Merged_dummy_SMOTE_4<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.60.DPD.or.worse.in.last.6.months +
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.6.months + No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Total.No.of.Trades + Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_4))
+summary(train_Merged_dummy_SMOTE_4)
+
+#Removing insignificant 'Total.No.of.Trades'variable as per high VIF
+train_Merged_dummy_SMOTE_5<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.60.DPD.or.worse.in.last.6.months +
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.6.months + No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_5))
+summary(train_Merged_dummy_SMOTE_5)
+
+#Removing insignificant 'No.of.PL.trades.opened.in.last.6.months'variable as per high VIF
+train_Merged_dummy_SMOTE_6<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.60.DPD.or.worse.in.last.6.months +
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_6))
+summary(train_Merged_dummy_SMOTE_6)
+
+#Removing insignificant 'No.of.times.60.DPD.or.worse.in.last.6.months'variable as per high VIF
+train_Merged_dummy_SMOTE_7<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  No.of.Inquiries.in.last.12.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_7))
+summary(train_Merged_dummy_SMOTE_7)
+
+#Removing insignificant 'No.of.Inquiries.in.last.12.months..excluding.home...auto.loans.'variable as per high VIF
+train_Merged_dummy_SMOTE_8<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.home.loan + Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_8))
+summary(train_Merged_dummy_SMOTE_8)
+
+#Removing insignificant 'Presence.of.open.home.loan'variable as per high p-value
+train_Merged_dummy_SMOTE_9<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.auto.loan + 
+                                  EducationProfessional + Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_9))
+summary(train_Merged_dummy_SMOTE_9)
+
+#Removing insignificant 'EducationProfessional'variable as per high p-value
+train_Merged_dummy_SMOTE_10<-glm(formula = Performance.Tag ~ Gender + Marital.Status..at.the.time.of.application. + 
+                                  Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                  No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                  Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                  No.of.PL.trades.opened.in.last.12.months + 
+                                  No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                  Presence.of.open.auto.loan + 
+                                  Type.of.residenceOthers, family = "binomial", 
+                                data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_10))
+summary(train_Merged_dummy_SMOTE_10)
+
+#Removing insignificant 'Gender'variable as per high p-value
+train_Merged_dummy_SMOTE_11<-glm(formula = Performance.Tag ~ Marital.Status..at.the.time.of.application. + 
+                                   Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                   No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                   Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                   No.of.PL.trades.opened.in.last.12.months + 
+                                   No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                   Presence.of.open.auto.loan + 
+                                   Type.of.residenceOthers, family = "binomial", 
+                                 data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_11))
+summary(train_Merged_dummy_SMOTE_11)
+
+#Removing insignificant 'Type.of.residenceOthers'variable as per high p-value
+train_Merged_dummy_SMOTE_12<-glm(formula = Performance.Tag ~ Marital.Status..at.the.time.of.application. + 
+                                   Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                   No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                   Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                   No.of.PL.trades.opened.in.last.12.months + 
+                                   No.of.Inquiries.in.last.6.months..excluding.home...auto.loans. + 
+                                   Presence.of.open.auto.loan, 
+                                   family = "binomial", 
+                                 data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_12))
+summary(train_Merged_dummy_SMOTE_12)
+
+#Removing insignificant 'Type.of.residenceOthers'variable as per high p-value
+train_Merged_dummy_SMOTE_13<-glm(formula = Performance.Tag ~ Marital.Status..at.the.time.of.application. + 
+                                   Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                   No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                   Avgas.CC.Utilization.in.last.12.months + No.of.trades.opened.in.last.6.months + 
+                                   No.of.PL.trades.opened.in.last.12.months + 
+                                   Presence.of.open.auto.loan, 
+                                 family = "binomial", 
+                                 data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_13))
+summary(train_Merged_dummy_SMOTE_13)
+
+#Removing insignificant 'No.of.trades.opened.in.last.6.months'variable as per high p-value & VIF
+train_Merged_dummy_SMOTE_14<-glm(formula = Performance.Tag ~ Marital.Status..at.the.time.of.application. + 
+                                   Income + No.of.months.in.current.residence + No.of.months.in.current.company + 
+                                   No.of.times.90.DPD.or.worse.in.last.12.months + No.of.times.30.DPD.or.worse.in.last.12.months + 
+                                   Avgas.CC.Utilization.in.last.12.months +
+                                   No.of.PL.trades.opened.in.last.12.months + 
+                                   Presence.of.open.auto.loan, 
+                                 family = "binomial", 
+                                 data = train_merged_model_dummy_smote)
+
+sort(vif(train_Merged_dummy_SMOTE_14))
+summary(train_Merged_dummy_SMOTE_14)
+
+#using 'train_Merged_dummy_SMOTE_14' as the Logit model to evaluate further
+#Model Evaluation started...
+
+# Predicting probabilities of responding for the test data
+test_predictions_dummy_LG <- predict(train_Merged_dummy_SMOTE_14, newdata = test_merged_model_dummy[,-25], type = "response")
+summary(test_predictions_dummy_LG)
+
+## Model Evaluation: Logistic Regression
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_dummy_LG <- factor(ifelse(test_predictions_dummy_LG >= 0.50, "yes", "no"))
+test_actual_response_dummy_LG <- factor(ifelse(test_merged_model_dummy$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_dummy_LG,test_predicted_response_dummy_LG)
+
+
+
+test_conf_dummy_LG <- confusionMatrix(test_predicted_response_dummy_LG,test_actual_response_dummy_LG, positive = "yes")
+test_conf_dummy_LG
+#---------------------------------------------------------    
+
+
+perform_fn_dummy_LG <- function(cutoff_dummy_LG) 
+{
+  test_predicted_response_dummy_LG <- factor(ifelse(test_predictions_dummy_LG >= cutoff_dummy_LG, "yes", "no"))
+  conf_dummy_LG <- confusionMatrix(test_predicted_response_dummy_LG, test_actual_response_dummy_LG, positive = "yes")
+  acc <- conf_dummy_LG$overall[1]
+  sens <- conf_dummy_LG$byClass[1]
+  spec <- conf_dummy_LG$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.80 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.80,length=100)
+
+OUT_dummy_LG = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_dummy_LG[i,] = perform_fn_dummy_LG(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_dummy_LG[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_dummy_LG[,2],col="darkgreen",lwd=2)
+lines(s,OUT_dummy_LG[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff_dummy_LG <- s[which(abs(OUT_dummy_LG[,1]-OUT_dummy_LG[,2])<0.39)]
+cutoff_dummy_LG
+
+# Probability cutoff is achieved at 0.39 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 39% for final model
+
+test_predicted_response_dummy_LG <- factor(ifelse(test_predictions_dummy_LG >= 0.39, "yes", "no"))
+
+conf_final_dummy_LG <- confusionMatrix(test_predicted_response_dummy_LG, test_actual_response_dummy_LG, positive = "yes")
+
+acc_dummy_LG <- conf_final_dummy_LG$overall[1]
+
+sens_dummy_LG <- conf_final_dummy_LG$byClass[1]
+
+spec_dummy_LG <- conf_final_dummy_LG$byClass[2]
+
+acc_dummy_LG
+#Accuracy:0.6286839
+sens_dummy_LG
+#Sensitivity:0.6238636
+spec_dummy_LG
+#Specificity:0.6288965
+
+#Model Evaluation ends........
+
+##MODEL 6:
+## Random Forest with dummy variables on MERGED data--------------------------------------
+train_merged_model_dummy_smote_RF <- randomForest(Performance.Tag ~., data = train_merged_model_dummy_smote, proximity = F, do.trace = T, mtry = 5)
+
+# Predict response for test data
+Prediction_merged_dummy_RF <- predict(train_merged_model_dummy_smote_RF, test_merged_model_dummy[, -25], type = "prob")
+summary(Prediction_merged_dummy_RF)
+
+# Model Evaluation starts................
+## Model Evaluation: Random Forest with dummy MERGED data
+#-----------------------------------------------------------------
+## Finding the optimal probability cut-off and report the relevant evaluation metrics
+
+#-------------------------------------------------------------------------------  
+# Let's use the probability cutoff of 50%.
+test_predicted_response_dummy_RF <- factor(ifelse(Prediction_merged_dummy_RF[ ,2] >= 0.50, "yes", "no"))
+test_actual_response_dummy_RF <- factor(ifelse(test_merged_model_dummy$Performance.Tag==1,"yes","no"))
+
+# Confusion matrix
+table(test_actual_response_dummy_RF,test_predicted_response_dummy_RF)
+
+
+
+test_conf_dummy_RF <- confusionMatrix(test_predicted_response_dummy_RF,test_actual_response_dummy_RF, positive = "yes")
+test_conf_dummy_RF
+#---------------------------------------------------------    
+
+
+perform_fn_dummy_RF <- function(cutoff_dummy_RF) 
+{
+  test_predicted_response_dummy_RF <- factor(ifelse(Prediction_merged_dummy_RF[ ,2] >= cutoff_dummy_RF, "yes", "no"))
+  conf_dummy_RF <- confusionMatrix(test_predicted_response_dummy_RF, test_actual_response_dummy_RF, positive = "yes")
+  acc <- conf_dummy_RF$overall[1]
+  sens <- conf_dummy_RF$byClass[1]
+  spec <- conf_dummy_RF$byClass[2]
+  out <- t(as.matrix(c(sens, spec, acc))) 
+  colnames(out) <- c("sensitivity", "specificity", "accuracy")
+  return(out)
+}
+
+#---------------------------------------------------------    
+
+# Creating cutoff values from 0.01 to 0.75 for plotting and initiallizing a matrix of 1000 X 4.
+
+s = seq(.01,.99,length=100)
+
+OUT_dummy_RF = matrix(0,100,3)
+
+
+for(i in 1:100)
+{
+  OUT_dummy_RF[i,] = perform_fn_dummy_RF(s[i])
+} 
+
+#---------------------------------------------------------    
+
+# plotting cutoffs 
+plot(s, OUT_dummy_RF[,1],xlab="Cutoff",ylab="Value",cex.lab=1.5,cex.axis=1.5,ylim=c(0,1),type="l",lwd=2,axes=FALSE,col=2)
+axis(1,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+axis(2,seq(0,1,length=5),seq(0,1,length=5),cex.lab=1.5)
+lines(s,OUT_dummy_RF[,2],col="darkgreen",lwd=2)
+lines(s,OUT_dummy_RF[,3],col=4,lwd=2)
+box()
+legend(0,.50,col=c(2,"darkgreen",4,"darkred"),lwd=c(2,2,2,2),c("Sensitivity","Specificity","Accuracy"))
+
+
+#---------------------------------------------------------    
+
+cutoff_dummy_RF <- s[which(abs(OUT_dummy_RF[,1]-OUT_dummy_RF[,2])<0.20)]
+cutoff_dummy_RF
+
+# Probability cutoff is achieved at 0.18 for optimal value of sensitivity, specificity and accuracy
+
+# Let's choose a cutoff value of 18% for final model
+
+test_predicted_response_dummy_RF <- factor(ifelse(Prediction_merged_dummy_RF[ ,2] >= 0.21, "yes", "no"))
+
+conf_final_dummy_RF <- confusionMatrix(test_predicted_response_dummy_RF, test_actual_response_dummy_RF, positive = "yes")
+
+acc_dummy_RF <- conf_final_dummy_RF$overall[1]
+
+sens_dummy_RF <- conf_final_dummy_RF$byClass[1]
+
+spec_dummy_RF <- conf_final_dummy_RF$byClass[2]
+
+acc_dummy_RF
+#Accuracy:0.6214361
+sens_dummy_RF
+#Sensitivity:0.5818182
+spec_dummy_RF
+#Specificity:0.6231833
+
+
+#############Validating the Model on Rejected_Application_Data###############
+
+# Check if NA or BLANK values  in the data frame
+colSums(is.na(Rejected_Application_Data))
+sapply(Rejected_Application_Data, function(x) length(which(x == "")))
+
+
+str(Rejected_Application_Data)
+View(Rejected_Application_Data)
+
+# Removing the ID column--'Application.ID' from Rejected_Application_Data dataframe
+Rejected_Application_Data<- Rejected_Application_Data[,-c(1)]
+
+
+# Changing to factors for categorical variables
+Rejected_Application_Data$Gender<-as.factor(Rejected_Application_Data$Gender)
+Rejected_Application_Data$Marital.Status..at.the.time.of.application.<-as.factor(Rejected_Application_Data$Marital.Status..at.the.time.of.application.)
+Rejected_Application_Data$Education<-as.factor(Rejected_Application_Data$Education)
+Rejected_Application_Data$Profession<-as.factor(Rejected_Application_Data$Profession)
+Rejected_Application_Data$Type.of.residence<-as.factor(Rejected_Application_Data$Type.of.residence)
+
+str(Rejected_Application_Data)
+Rejected_Application_Data_Dummy<-Rejected_Application_Data
+
+# convert factors with 2 levels to numerical variables:
+levels(Rejected_Application_Data_Dummy$Gender)<-c(1,0)
+Rejected_Application_Data_Dummy$Gender<- as.numeric(levels(Rejected_Application_Data_Dummy$Gender))[Rejected_Application_Data_Dummy$Gender]
+levels(Rejected_Application_Data_Dummy$Marital.Status..at.the.time.of.application.)<-c(1,0)
+Rejected_Application_Data_Dummy$Marital.Status..at.the.time.of.application.<- as.numeric(levels(Rejected_Application_Data_Dummy$Marital.Status..at.the.time.of.application.))[Rejected_Application_Data_Dummy$Marital.Status..at.the.time.of.application.]
+
+# creating dummy variables for factor variables with more than 2 levels
+#Namely we have to this for 5 variables present in df as follows
+
+Rejected_Application_Data_Dummy1<-cbind(Rejected_Application_Data_Dummy,dummy<-model.matrix(~Rejected_Application_Data_Dummy$Education-1,data=Rejected_Application_Data_Dummy)[ ,-1])
+Rejected_Application_Data_Dummy2<-cbind(Rejected_Application_Data_Dummy1,dummy1<-model.matrix(~Rejected_Application_Data_Dummy$Profession-1,data=Rejected_Application_Data_Dummy)[ ,-1])
+Rejected_Application_Data_Dummy3<-cbind(Rejected_Application_Data_Dummy2,dummy2<-model.matrix(~Rejected_Application_Data_Dummy$Type.of.residence-1,data=Rejected_Application_Data_Dummy)[ ,-1])
+
+
+# Dropping the original factor variables now
+Rejected_Application_Data_Dummy<-Rejected_Application_Data_Dummy3[ ,-c(6,7,8)]
+View(Rejected_Application_Data_Dummy)
+
+#Labelling the dummy variables
+setnames(Rejected_Application_Data_Dummy, 
+         old = c('Rejected_Application_Data_Dummy$EducationMasters','Rejected_Application_Data_Dummy$EducationOthers',
+                 'Rejected_Application_Data_Dummy$EducationPhd','Rejected_Application_Data_Dummy$EducationProfessional','Rejected_Application_Data_Dummy$ProfessionSE',
+                 'Rejected_Application_Data_Dummy$ProfessionSE_PROF','Rejected_Application_Data_Dummy$Type.of.residenceLiving with Parents','Rejected_Application_Data_Dummy$Type.of.residenceOthers',
+                 'Rejected_Application_Data_Dummy$Type.of.residenceOwned','Rejected_Application_Data_Dummy$Type.of.residenceRented'),
+         new = c('EducationMasters','EducationOthers',
+                 'EducationPhd','EducationProfessional','ProfessionSE',
+                 'ProfessionSE_PROF','Type.of.residenceLivingwithParents','Type.of.residenceOthers',
+                 'Type.of.residenceOwned','Type.of.residenceRented'))
+
+View(Rejected_Application_Data_Dummy)
+
+
+# Predicting probabilities of responding for the validation data
+Rejected_Prediction_vaildation_RF <- predict(train_merged_model_dummy_smote_RF, Rejected_Application_Data_Dummy[, -25], type = "prob")
+summary(Rejected_Prediction_vaildation_RF)
+
+
+##Created below data frame 'validation_Rejected_df' with 'predicted_probs' value showing the Rejection probability
+validation_Rejected_df<-Rejected_Application_Data_Dummy
+validation_Rejected_df$predicted_probs<-Rejected_Prediction_vaildation_RF
+
+
+##########################################
+######Application scorecard########
+##########################################
+
+###let's calculate the scores of Rejected Applications validation set(i.e. 1423 NA values)
+validation_Rejected_df$log_odds <- log(validation_Rejected_df$predicted_probs/(1-validation_Rejected_df$predicted_probs))
+
+
+#Define a target:
+#Target Score Value (ts): 400
+ts<-400
+#Inverted Target Odds (to): 10
+to<-10
+
+#Define slope:
+#points to double the odds (pdo): 20
+pdo<-20
+
+Factor = pdo / log(2)  
+#28.8539
+
+#Offset<- (ts)-(Factor*log(to))
+fac<-Factor*log(to)
+fac
+#66.43856
+Offset<-400-66.43856
+#333.5614
+#Score = Offset + Factor ??? ln (odds)
+print (" The Equation is: Score<-333.5614+(28.8539*validation_Rejected_df$log_odds)")
+validation_Rejected_df$Score<-333.5614+(28.8539*validation_Rejected_df$log_odds)
+View(validation_Rejected_df)
+
+
+###let's calculate the scores of Approved Applications dataset............................
+
+Approved_Prediction_vaildation_RF <- predict(train_merged_model_dummy_smote_RF, Accepted_Application_Data_Dummy[, -25], type = "prob")
+summary(Approved_Prediction_vaildation_RF)
+
+
+##Created below data frame 'validation_Approved_df' with 'predicted_probs' value showing the Approval probability
+validation_Approved_df<-Accepted_Application_Data_Dummy
+validation_Approved_df$predicted_probs<-Approved_Prediction_vaildation_RF
+validation_Approved_df$log_odds <- log(validation_Approved_df$predicted_probs/(1-validation_Approved_df$predicted_probs))
+
+print (" The Equation is: Score<-333.5614+(28.8539*validation_Approved_df$log_odds)")
+validation_Approved_df$Score<-333.5614+(28.8539*validation_Approved_df$log_odds)
+View(validation_Approved_df)
+summary(validation_Approved_df)
+summary(validation_Rejected_df)
+
+
+# Check if any NA or BLANK values still there in the data frame
+colSums(is.na(validation_Approved_df))
+sapply(validation_Approved_df, function(x) length(which(x == "")))
+
+# sorting the data points in decreasing order of probability of response 
+validation_Approved_df <- validation_Approved_df[order(validation_Approved_df$predicted_probs, decreasing = T), ]
+View(validation_Approved_df)
+
+validation_Approved_df$response <- factor(ifelse(validation_Approved_df$response==1,1,0))
+LG = lift(validation_Approved_df$response, validation_Approved_df$predicted_probs, groups = 10)
+
+#Gain chart
+plot(LG$bucket,LG$Gain,col="red",type="l",main="Gain Chart",xlab="% of total targeted",ylab = "% of positive Response")
+#Lift chart
+plot(LG$bucket,LG$Cumlift,col="red",type="l",main="Lift Chart",xlab="% of total targeted",ylab = "Lift")
+
+#Conclusion:
+#MODEL 6  is the best model with
+#Accuracy:0.6214361
+#Sensitivity:0.5818182
+#Specificity:0.6231833
+# We have considered here Specificity is the driving metric for predicting the default's as the data set at hand was imbalanced.
+#As per the Application scorecard the cut off score can be arrived at the 3rd quartile value of the default population
+#Cut off score is derived as 298. Below which Applicants would not be granted credit card.
